@@ -9,7 +9,18 @@
 #   g4os end               # fecha a sessão
 set -euo pipefail
 HABBLAUD="${HABBLAUD_URL:-http://127.0.0.1:4747}"
-STATE="${TMPDIR:-/tmp}/g4os-habblaud-session"
+# Chave da sessão: o ancestral mais velho antes do launchd — cada chat do G4 OS tem o seu,
+# então chats diferentes viram personagens diferentes no escritório.
+sessionKey() {
+  local pid=$$ p
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    p="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+    [ -n "$p" ] && [ "$p" != "1" ] && pid="$p" || break
+  done
+  echo "$pid"
+}
+KEY="$(sessionKey)"
+STATE="${TMPDIR:-/tmp}/g4os-habblaud-session-$KEY"
 CMD="${1:-help}"; shift || true
 
 uuid() { uuidgen | tr 'A-Z' 'a-z'; }
