@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Adaptador G4 OS → Habblaud: transforma a atividade de uma sessão do G4 OS
+# em eventos de agente no escritório (personagem "Codex G4").
+# Uso:
+#   g4os start [projeto]   # abre a sessão no escritório (chame no 1º uso do turno)
+#   g4os prompt <texto>    # o que o usuário pediu (marca "trabalhando")
+#   g4os tool <nome>       # o que estou fazendo agora (ex.: "lendo arquivos")
+#   g4os stop              # fim do turno (fica ocioso)
+#   g4os end               # fecha a sessão
+set -euo pipefail
+HABBLAUD="${HABBLAUD_URL:-http://127.0.0.1:4747}"
+STATE="${TMPDIR:-/tmp}/g4os-habblaud-session"
+CMD="${1:-help}"; shift || true
+
+uuid() { uuidgen | tr 'A-Z' 'a-z'; }
+post() { curl -s -o /dev/null -X POST "$HABBLAUD/api/codex/events" -H 'Content-Type: application/json' -d "$1"; }
+acct() { printf '{"account":".codex-g4","event":%s}' "$1"; }
+
+case "$CMD" in
+  start)
+    SID="$(uuid)"; echo "$SID" > "$STATE"
+    post "$(acct "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$SID\",\"cwd\":\"${1:-$PWD}\"}")"
+    echo "sessão G4 OS no escritório: $SID" ;;
+  prompt)
+    SID="$(cat "$STATE" 2>/dev/null)" || { echo "rode g4os start primeiro" >&2; exit 1; }
+    P="$(printf '%s' "$1" | head -c 300 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    post "$(acct "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$SID\",\"cwd\":\"$PWD\",\"prompt\":$P}")" ;;
+  tool)
+    SID="$(cat "$STATE" 2>/dev/null)" || { echo "rode g4os start primeiro" >&2; exit 1; }
+    T="$(printf '%s' "${1:-tarefa}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    post "$(acct "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"cwd\":\"$PWD\",\"tool_name\":$T,\"tool_input\":{}}")" ;;
+  stop)
+    SID="$(cat "$STATE" 2>/dev/null)" || exit 0
+    post "$(acct "{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\"}")" ;;
+  end)
+    SID="$(cat "$STATE" 2>/dev/null)" || exit 0
+    post "$(acct "{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"$SID\"}")"; rm -f "$STATE" ;;
+  help|*) sed -n '2,10p' "$0" ;;
+esac
