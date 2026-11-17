@@ -44,3 +44,39 @@ g4os end                       # fecha a sessão
 
 - One-way: o escritório mostra o que o G4 OS faz; mensagens e aprovações clicadas lá não chegam ao agente.
 - O personagem usa o selo CODEX (é o único protocolo de eventos aberto do Habblaud).
+
+## Residentes: agentes fixos numa sala
+
+O comando `residentes` (instalado junto) mantém agentes **fixos no escritório**, cada um na própria
+sala, com papel e prompt próprios — e que trabalham de verdade: uma tarefa roda o Claude Code
+(`claude -p`) e o escritório mostra o progresso em tempo real.
+
+```bash
+residentes start               # liga a presença de todos (daemon em background)
+residentes run g4os "tarefa"   # dá uma tarefa a um residente
+residentes status              # o que cada um está fazendo
+residentes stop                # todos saem do escritório
+```
+
+Cadastre os residentes em `~/.habblaud/residentes.json`:
+
+```json
+{
+  "habblaud": "http://127.0.0.1:4747",
+  "conta": ".codex-g4",
+  "residentes": [
+    { "id": "g4os", "nome": "G4 OS", "sala": "Central G4",
+      "papel": "Chef de staff do escritório",
+      "prompt": "Você é o G4 OS, residente permanente do escritório.",
+      "cwd": "~/projetos/jarvis", "memoria": true, "permissivo": true }
+  ]
+}
+```
+
+- `sala` — sala própria do residente (criada no escritório se não existir).
+- `prompt`/`papel` — instrução de sistema do agente.
+- `cwd` — diretório de trabalho real das tarefas.
+- `memoria` — continua conversas anteriores do residente (`--continue`).
+- `permissivo` — roda sem pedir aprovação (necessário em tarefas não interativas).
+
+Requisito para executar tarefas: Claude Code autenticado (`claude auth login`).

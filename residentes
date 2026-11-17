@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Residentes do Habblaud: agentes que ficam FIXOS numa sala do escritório e trabalham de verdade.
+#
+#   residentes start              # liga a presença de todos (daemon em background)
+#   residentes run <id> tarefa    # dá uma tarefa a um residente (roda claude -p de verdade)
+#   residentes status | list      # o que cada residente está fazendo
+#   residentes stop               # desliga (todos saem do escritório)
+#
+# Cadastro: ~/.habblaud/residentes.json
+#   { "habblaud": "http://127.0.0.1:4747", "conta": ".codex-g4",
+#     "residentes": [ { "id": "g4os", "nome": "G4 OS", "sala": "Central G4",
+#                       "papel": "...", "prompt": "...", "cwd": "~/proj",
+#                       "memoria": true, "permissivo": true } ] }
+#
+# Sem dependências: bash + python3 + curl + claude (Claude Code no PATH).
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+CONFIG="${HABBLAUD_RESIDENTES_CONFIG:-$HOME/.habblaud/residentes.json}"
+STATE_DIR="${HABBLAUD_RESIDENTES_STATE:-$HOME/.habblaud/residentes.d}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+case "${1:-help}" in
+  start)
+    if [ -f "$STATE_DIR/daemon.pid" ] && kill -0 "$(cat "$STATE_DIR/daemon.pid")" 2>/dev/null; then
+      echo "daemon já rodando (pid $(cat "$STATE_DIR/daemon.pid"))"; exit 0
+    fi
+    mkdir -p "$STATE_DIR"
+    nohup "$PYTHON_BIN" "$(dirname "$(readlink -f "$0")")/.residentes-daemon.py" "$CONFIG" "$STATE_DIR" >>"$STATE_DIR/daemon.log" 2>&1 &
+    echo "residentes no ar (pid $!)" ;;
+  run|tell)
+    shift; RID="${1:-}"; shift || true
+    [ -n "$RID" ] || { echo "uso: residentes run <id> <tarefa>" >&2; exit 2; }
+    exec "$PYTHON_BIN" - "$CONFIG" "$STATE_DIR" "$RID" "$*" <<'PYRUN'
+import json, pathlib, sys, time
+config, state, rid, task = sys.argv[1:5]
+spool = pathlib.Path(state, "spool"); spool.mkdir(parents=True, exist_ok=True)
+f = spool / f"{int(time.time()*1000)}-{rid}.json"
+f.write_text(json.dumps({"id": rid, "task": task}, ensure_ascii=False))
+print(f"tarefa para '{rid}' na fila ({f.name})")
+PYRUN
+    ;;
+  status|list|ps)
+    exec "$PYTHON_BIN" - "$STATE_DIR" "${2:-}" <<'PYPS'
+import json, pathlib, sys
+state = pathlib.Path(sys.argv[1])
+pidf = state / "daemon.pid"
+alive = pidf.exists() and (lambda p: p.startswith(b"") and pathlib.Path(f"/proc/{p}").exists() if False else True) and True
+import subprocess
+if pidf.exists():
+    pid = pidf.read_text().strip()
+    r = subprocess.run(["ps", "-p", pid], capture_output=True, text=True)
+    alive = r.returncode == 0
+print(f"daemon: {'rodando (pid ' + pid + ')' if alive else 'parado'}")
+jobs = state / "jobs.json"
+if jobs.exists():
+    for rid, j in json.loads(jobs.read_text()).items():
+        print(f"  {rid}: {j}")
+PYPS
+    ;;
+  stop)
+    if [ -f "$STATE_DIR/daemon.pid" ]; then
+      kill "$(cat "$STATE_DIR/daemon.pid")" 2>/dev/null && echo "daemon avisado; os residentes saem do escritório em instantes" || echo "daemon não estava rodando"
+    else
+      echo "daemon não estava rodando"
+    fi
+    ;;
+  logs)
+    RID="${2:-}"
+    if [ -n "$RID" ]; then exec tail -n 40 "$STATE_DIR/log-$RID.log" 2>/dev/null || echo "sem log para $RID"; else exec tail -n 40 "$STATE_DIR/daemon.log" 2>/dev/null || echo "sem log do daemon"; fi
+    ;;
+  *)
+    sed -n '2,14p' "$(readlink -f "$0" 2>/dev/null || echo "$0")" | sed 's/^# \{0,1\}//'
+    ;;
+esac

@@ -7,6 +7,20 @@ HOME_DIR="${HOME:?}"
 echo "==> 1/4. Script no PATH"
 mkdir -p "$HOME_DIR/.local/bin"
 install -m 0755 g4os "$HOME_DIR/.local/bin/g4os"
+install -m 0755 residentes "$HOME_DIR/.local/bin/residentes"
+install -m 0755 .residentes-daemon.py "$HOME_DIR/.local/bin/.residentes-daemon.py"
+[ -f "$HOME_DIR/.habblaud/residentes.json" ] || cat > "$HOME_DIR/.habblaud/residentes.json" <<'JSON'
+{
+  "habblaud": "http://127.0.0.1:4747",
+  "conta": ".codex-g4",
+  "residentes": [
+    { "id": "g4os", "nome": "G4 OS", "sala": "Central G4",
+      "papel": "Chef de staff do escritório",
+      "prompt": "Você é o G4 OS, residente permanente do escritório virtual.",
+      "cwd": "~/", "memoria": true, "permissivo": true }
+  ]
+}
+JSON
 case ":$PATH:" in
   *":$HOME_DIR/.local/bin:"*) ;;
   *) for RC in ~/.zshrc ~/.bashrc; do
