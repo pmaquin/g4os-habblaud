@@ -11,7 +11,6 @@ import os
 import pathlib
 import re
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -21,6 +20,7 @@ import uuid
 CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.habblaud/residentes.json")
 STATE_DIR = pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else "~/.habblaud/residentes.d").expanduser()
 SPOOL = STATE_DIR / "spool"
+EXEC = STATE_DIR / "exec"
 LOG_DIR = STATE_DIR
 HEARTBEAT_S = 25.0          # < HOOK_PRESENCE_MS (60s) do Habblaud
 POLL_S = 1.0
@@ -87,63 +87,26 @@ def heartbeat_all(base, account, residents):
             send(base, account, {"hook_event_name": "Stop", "session_id": sid})
 
 
-def run_task(r, task, base, account):
+def run_task(r, task, path):
+    """Repassa a tarefa ao G4 OS: marca como na fila e deixa o arquivo para o executor
+    (job 'Residentes — executor' dos Agendamentos) pegar. O daemon nunca executa nada."""
     rid = r["id"]
-    sid = session_of(r, base, account)
-    room = room_cwd(r)
-    work = expand(r.get("cwd") or "~")
     BUSY.add(rid)
-    JOBS[rid] = f"trabalhando: {task[:60]}"
-    log(f"{rid}: tarefa iniciada em {work}: {task[:80]}")
-    send(base, account, {"hook_event_name": "UserPromptSubmit", "session_id": sid,
-                         "cwd": room, "prompt": task[:300]})
-    logfile = open(LOG_DIR / f"log-{rid}.log", "a")
-    logfile.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} — {task}\n")
-    system = "\n".join(p for p in [r.get("prompt"), f"Papel: {r['papel']}" if r.get("papel") else None] if p)
-    cmd = ["claude", "-p", task, "--output-format", "stream-json", "--verbose",
-           "--permission-mode", "bypassPermissions" if r.get("permissivo", True) else "default"]
-    if system:
-        cmd += ["--append-system-prompt", system]
-    if r.get("memoria", True):
-        cmd += ["--continue"]
-    try:
-        proc = subprocess.Popen(cmd, cwd=work, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for line in proc.stdout:
-            logfile.write(line)
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            if ev.get("type") == "assistant":
-                for block in ev.get("message", {}).get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        label = block.get("name", "ferramenta")
-                        inp = block.get("input") or {}
-                        detail = inp.get("description") or inp.get("command") or inp.get("file_path") or ""
-                        send(base, account, {"hook_event_name": "PreToolUse", "session_id": sid,
-                                             "cwd": room, "tool_name": f"{label}: {detail}"[:120],
-                                             "tool_input": {}})
-        proc.wait()
-        ok = proc.returncode == 0
-        JOBS[rid] = "ocioso"
-        log(f"{rid}: tarefa {'concluída' if ok else 'falhou (exit ' + str(proc.returncode) + ')'}")
-        logfile.write(f"----- exit {proc.returncode}\n")
-    except FileNotFoundError:
-        JOBS[rid] = "erro: claude não encontrado"
-        log(f"{rid}: comando claude não está no PATH")
-    finally:
-        logfile.close()
-        BUSY.discard(rid)
-        send(base, account, {"hook_event_name": "Stop", "session_id": sid})
+    JOBS[rid] = f"na fila do G4 OS: {task[:60]}"
+    log(f"{rid}: tarefa na fila para o G4 OS: {task[:80]}")
+    if path:
+        try:
+            EXEC.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(path).rename(EXEC / pathlib.Path(path).name)  # spool/ -> exec/
+        except FileNotFoundError:
+            pass  # já movida
+    BUSY.discard(rid)
 
 
 def main():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SPOOL.mkdir(parents=True, exist_ok=True)
+    EXEC.mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "daemon.pid").write_text(str(os.getpid()))
     running = True
 
@@ -182,24 +145,31 @@ def main():
             threading.Thread(target=heartbeat_all, args=(base, account, residents), daemon=True).start()
             last_beat = time.time()
 
+        # tarefa já assumida pelo executor do G4 OS (sumiu de exec/) -> de volta a ocioso
+        for rid, j in list(JOBS.items()):
+            if j.startswith("na fila") and not list(EXEC.glob(f"*-{rid}.json")):
+                JOBS[rid] = "ocioso"
+
         # fila de tarefas
         for f in sorted(SPOOL.glob("*.json")):
             try:
                 job = json.loads(f.read_text())
             except Exception:
-                f.unlink(missing_ok=True)
-                continue
-            f.unlink(missing_ok=True)
+                continue  # arquivo ainda sendo escrito; tenta no próximo ciclo
             r = next((x for x in residents if x["id"] == job.get("id")), None)
             if not r:
                 log(f"tarefa para residente desconhecido: {job.get('id')}")
+                f.unlink(missing_ok=True)
                 continue
-            if r["id"] in BUSY:
-                log(f"{r['id']} já está ocupado; tarefa descartada (tente de novo)")
-                continue
-            t = threading.Thread(target=run_task, args=(r, job.get("task", ""), base, account), daemon=True)
+            if any(t.name == f"task-{f.name}" for t in threads):
+                continue  # já assumida por outra thread
+            t = threading.Thread(target=run_task, args=(r, job.get("task", ""), str(f)), name=f"task-{f.name}", daemon=True)
             t.start()
             threads.append(t)
+
+        # mapeamento id -> session_id para o executor do G4 OS
+        (STATE_DIR / "sessions.json").write_text(
+            json.dumps(SESSIONS, indent=1))
 
         (STATE_DIR / "jobs.json").write_text(json.dumps(JOBS, ensure_ascii=False, indent=1))
         time.sleep(POLL_S)

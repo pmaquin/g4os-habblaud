@@ -48,8 +48,11 @@ g4os end                       # fecha a sessão
 ## Residentes: agentes fixos numa sala
 
 O comando `residentes` (instalado junto) mantém agentes **fixos no escritório**, cada um na própria
-sala, com papel e prompt próprios — e que trabalham de verdade: uma tarefa roda o Claude Code
-(`claude -p`) e o escritório mostra o progresso em tempo real.
+sala, com papel e prompt próprios. As tarefas são executadas **100% pelo G4 OS**: o daemon só mantém
+a presença e enfileira as tarefas; um job "Residentes — executor de tarefas (Habblaud)" nas
+Automações > Agendamentos do G4 OS (a cada 2 min) consome a fila (`~/.habblaud/residentes.d/exec/`),
+roda cada tarefa numa sessão do G4 OS com o papel/prompt do residente e informa o progresso ao
+escritório em tempo real.
 
 ```bash
 residentes start               # liga a presença de todos (daemon em background)
@@ -76,7 +79,6 @@ Cadastre os residentes em `~/.habblaud/residentes.json`:
 - `sala` — sala própria do residente (criada no escritório se não existir).
 - `prompt`/`papel` — instrução de sistema do agente.
 - `cwd` — diretório de trabalho real das tarefas.
-- `memoria` — continua conversas anteriores do residente (`--continue`).
-- `permissivo` — roda sem pedir aprovação (necessário em tarefas não interativas).
+- `memoria` e `permissivo` — reservados (a execução agora é toda do G4 OS).
 
-Requisito para executar tarefas: Claude Code autenticado (`claude auth login`).
+Requisito para executar tarefas: G4 OS com o job executor criado e o daemon no ar (`residentes start`).
