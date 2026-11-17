@@ -1,3 +1,8 @@
+---
+name: "Habblaud: Presença do G4 OS (REGRA 0)"
+description: "REGRA 0, sempre ativa: anunciar esta sessão no escritório do Habblaud (comando g4os) em TODO turno com trabalho real — arquivos, comandos, navegação, bancos. Usar sem @menção e sem exceção; falha do g4os nunca bloqueia o trabalho."
+---
+
 # Habblaud: presença do G4 OS no escritório
 
 O comando `g4os` (`~/.g4os/workspaces/jarvis/habblaud-g4os/g4os`, no PATH) mostra esta sessão do G4 OS como um
