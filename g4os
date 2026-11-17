@@ -1,50 +1,69 @@
 #!/usr/bin/env bash
 # Adaptador G4 OS → Habblaud: transforma a atividade de uma sessão do G4 OS
-# em eventos de agente no escritório (personagem "Codex G4").
+# em eventos de agente no escritório (personagem "Bonde do Tigrão").
 # Uso:
 #   g4os start [projeto]   # abre a sessão no escritório (chame no 1º uso do turno)
 #   g4os prompt <texto>    # o que o usuário pediu (marca "trabalhando")
 #   g4os tool <nome>       # o que estou fazendo agora (ex.: "lendo arquivos")
 #   g4os stop              # fim do turno (fica ocioso)
 #   g4os end               # fecha a sessão
-set -euo pipefail
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 HABBLAUD="${HABBLAUD_URL:-http://127.0.0.1:4747}"
+ACCOUNT="${G4OS_ACCOUNT:-.codex-g4}"
+CMD="${1:-help}"
+shift || true
+
 # Chave da sessão: o ancestral mais velho antes do launchd — cada chat do G4 OS tem o seu,
 # então chats diferentes viram personagens diferentes no escritório.
-sessionKey() {
-  local pid=$$ p
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    p="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
-    [ -n "$p" ] && [ "$p" != "1" ] && pid="$p" || break
-  done
-  echo "$pid"
-}
-KEY="$(sessionKey)"
-STATE="${TMPDIR:-/tmp}/g4os-habblaud-session-$KEY"
-CMD="${1:-help}"; shift || true
+PID=$$
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  P="$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')"
+  [ -n "$P" ] && [ "$P" != "1" ] || break
+  PID="$P"
+done
+STATE="${TMPDIR:-/tmp}/g4os-habblaud-session-$PID"
 
-uuid() { uuidgen | tr 'A-Z' 'a-z'; }
-post() { curl -s -o /dev/null -X POST "$HABBLAUD/api/codex/events" -H 'Content-Type: application/json' -d "$1"; }
-acct() { printf '{"account":".codex-g4","event":%s}' "$1"; }
+python3 - "$CMD" "$STATE" "$ACCOUNT" "$HABBLAUD" "$PWD" "$@" <<'PYEOF'
+import json, subprocess, sys, uuid, pathlib
 
-case "$CMD" in
-  start)
-    SID="$(uuid)"; echo "$SID" > "$STATE"
-    post "$(acct "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$SID\",\"cwd\":\"${1:-$PWD}\"}")"
-    echo "sessão G4 OS no escritório: $SID" ;;
-  prompt)
-    SID="$(cat "$STATE" 2>/dev/null)" || { echo "rode g4os start primeiro" >&2; exit 1; }
-    P="$(printf '%s' "$1" | head -c 300 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-    post "$(acct "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$SID\",\"cwd\":\"$PWD\",\"prompt\":$P}")" ;;
-  tool)
-    SID="$(cat "$STATE" 2>/dev/null)" || { echo "rode g4os start primeiro" >&2; exit 1; }
-    T="$(printf '%s' "${1:-tarefa}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-    post "$(acct "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"cwd\":\"$PWD\",\"tool_name\":$T,\"tool_input\":{}}")" ;;
-  stop)
-    SID="$(cat "$STATE" 2>/dev/null)" || exit 0
-    post "$(acct "{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\"}")" ;;
-  end)
-    SID="$(cat "$STATE" 2>/dev/null)" || exit 0
-    post "$(acct "{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"$SID\"}")"; rm -f "$STATE" ;;
-  help|*) sed -n '2,10p' "$0" ;;
-esac
+cmd, state, account, habblaud, cwd = sys.argv[1:6]
+args = sys.argv[6:]
+p = pathlib.Path(state)
+
+def sid():
+    return p.read_text().strip() if p.exists() else ""
+
+def send(event):
+    body = json.dumps({"account": account, "event": event})
+    try:
+        subprocess.run(["curl", "-s", "-m", "5", "-X", "POST", f"{habblaud}/api/codex/events",
+                        "-H", "Content-Type: application/json", "-d", body],
+                       check=True, capture_output=True)
+    except Exception as e:
+        print(f"g4os: falhou falar com o Habblaud ({e})", file=sys.stderr)
+
+def text(v, limit=300):
+    return " ".join(v.split())[:limit] if v else ""
+
+if cmd == "start":
+    s = str(uuid.uuid4())
+    p.write_text(s)
+    send({"hook_event_name": "SessionStart", "session_id": s, "cwd": args[0] if args else cwd})
+    print(f"sessão G4 OS no escritório: {s}")
+elif cmd == "prompt":
+    if not sid(): sys.exit("g4os: rode 'g4os start' primeiro")
+    send({"hook_event_name": "UserPromptSubmit", "session_id": sid(), "cwd": cwd, "prompt": text(" ".join(args))})
+elif cmd == "tool":
+    if not sid(): sys.exit("g4os: rode 'g4os start' primeiro")
+    send({"hook_event_name": "PreToolUse", "session_id": sid(), "cwd": cwd,
+          "tool_name": text(" ".join(args)) or "tarefa", "tool_input": {}})
+elif cmd == "stop":
+    if sid(): send({"hook_event_name": "Stop", "session_id": sid()})
+elif cmd == "end":
+    if sid():
+        send({"hook_event_name": "SessionEnd", "session_id": sid()})
+        p.unlink(missing_ok=True)
+else:
+    print(__doc__)
+PYEOF
